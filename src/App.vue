@@ -1,7 +1,3 @@
-<style>
-	@import './assets/common.css';
-</style>
-
 <template>
 	<router-view id="app" @login="loginDirect" @logout="logoutDirect">
 	</router-view>
@@ -22,7 +18,6 @@
 			}
 		},
 		methods: {
-			// 获取许可。permission，许可，允许
 			getPermission: function(userInfo) {
 				let resourcePermission = {};
 				if (Array.isArray(userInfo.resources)) {
@@ -31,31 +26,44 @@
 						resourcePermission[key] = true;
 					});
 				}
+				// 拿到的resourcePermission是这个
+				// {
+				// 	"get,/accounts": true,
+				// 	"delete,/account/**": true,
+				// 	"put,/account/**": true,
+				// 	"post,/account/*/roles": true,
+				// 	"get,/roles": true,
+				// 	"delete,/role/**": true,
+				// 	"put,/role/**": true,
+				// 	"post,/role": true,
+				// 	"get,/signin": true
+				// }
 				return resourcePermission;
 			},
 			setInterceptor: function(resourcePermission) {
 				let vm = this;
 				myInterceptor = instance.interceptors.request.use(function(config) {
-					//得到类权限路径
+					//得到请求路径
 					let perName = config.url.replace(config.baseURL, '').replace('/GET', '').replace('/POST', '').split('?')[0];
-					//转成权限格式
+					//权限格式1 /path/${param}
 					let reg1 = perName.match(/^(\/[^\/]+\/)[^\/]+$/);
-					// /path/${param}
 					if (reg1) {
 						perName = reg1[1] + '**';
 					}
+					//权限格式2 /path/${param}/path
 					let reg2 = perName.match(/^\/[^\/]+\/([^\/]+)\/[^\/]+$/);
-					// /path/${param}/path
 					if (reg2) {
 						perName = perName.replace(reg2[1], '*');
 					}
-					//匹配权限
+					//校验权限
 					if (!resourcePermission[config.method + ',' + perName]) {
+						//调试信息
 						console.warn(resourcePermission, config.method + ',' + perName);
 						vm.$message({
 							message: '无访问权限，请联系企业管理员',
 							type: 'warning'
 						});
+						//拦截请求
 						return Promise.reject({
 							message: 'no permission'
 						});
@@ -69,9 +77,9 @@
 				}
 				let vm = this;
 				let allowedRouter = [];
-				//转成多维数组
+				//将菜单数据转成多维数组格式
 				let arrayMenus = util.buildMenu(userInfo.menus);
-				//转成hash
+				//将多维数组转成对象格式
 				let hashMenus = {};
 				let setMenu2Hash = function(array, base) {
 					array.map(key => {
@@ -85,9 +93,9 @@
 					});
 				};
 				setMenu2Hash(arrayMenus);
-				//全局挂载hashMenus
+				//全局挂载hashMenus，用于实现路由守卫
 				this.$root.hashMenus = hashMenus;
-				//遍历本地路由
+				//筛选本地路由方法
 				let findLocalRoute = function(array, base) {
 					let replyResult = [];
 					array.forEach(function(route) {
@@ -111,6 +119,7 @@
 			},
 			extendRoutes: function(allowedRouter) {
 				let vm = this;
+				//为动态路由添加独享守卫
 				let actualRouter = util.deepcopy(allowedRouter);
 				actualRouter.map(e => {
 					return e.beforeEnter = function(to, from, next) {
@@ -123,62 +132,67 @@
 				});
 				let originPath = util.deepcopy(userPath);
 				originPath[0].children = actualRouter;
+				//注入路由
 				vm.$router.addRoutes(originPath.concat([{
 					path: '*',
 					redirect: '/404'
 				}]));
 			},
 			storageMenu: function(allowedRouter) {
+				//将子菜单数据复制到meta中，用于实现父级页面功能列表，非必需
 				allowedRouter.forEach(route => {
 					if (route.children) {
 						if (!route.meta) route.meta = {};
 						route.meta.children = route.children;
 					}
 				});
+				//保存菜单数据
 				this.menuData = allowedRouter;
 			},
-			signin: function(cb) {
+			signin: function(callback) {
 				let vm = this;
+				//检查登录状态（检查本地是否已有token）
 				let localUser = util.session('token');
 				if (!localUser || !localUser.token) {
+					// sessionStorage没有读到token，跳转到http://localhost:8088/#/login?from=%2F 登录页
 					return vm.$router.push({
 						path: '/login',
 						query: {
-							from: vm.$router.currentRoute.path
+							from: vm.$router.currentRoute.path // vm.$router.currentRoute.path 就是 / 转义字符为 %2F
 						}
 					});
 				}
+				//设置请求头统一携带token
 				instance.defaults.headers.common['Authorization'] = 'Bearer ' + localUser.token;
-				//获取用户信息及权限
+				//获取用户信息及权限数据
 				instance.get(`/GET/signin`, {
 					params: {
 						Authorization: localUser.token
 					}
 				}).then((res) => {
 					let userInfo = res.data;
-					console.log(userInfo);
-					//取得资源权限
+					//取得资源权限对象
 					let resourcePermission = vm.getPermission(userInfo);
-					console.log(resourcePermission);
-					//请求拦截
+					//使用资源权限设置请求拦截
 					vm.setInterceptor(resourcePermission);
-					//获得路由
+					//获得实际路由
 					let allowedRouter = vm.getRoutes(userInfo);
+					//若无可用路由限制访问
 					if (!allowedRouter || !allowedRouter.length) {
 						util.session('token', '');
 						return document.body.innerHTML = ('<h1>账号访问受限，请联系系统管理员！</h1>');
 					}
-					//注入动态路由
+					//动态注入路由
 					vm.extendRoutes(allowedRouter);
 					//保存菜单数据
 					vm.storageMenu(allowedRouter);
-					//用户信息持久化
-					//vm.storageUser(Object.assign(localUser || {}, userInfo));
+					//保存用户信息
 					vm.userData = userInfo;
-					//权限检查方法
+					//权限检验方法
 					Vue.prototype.$_has = function(rArray) {
 						let resources = [];
 						let permission = true;
+						//提取权限数组
 						if (Array.isArray(rArray)) {
 							rArray.forEach(function(e) {
 								resources = resources.concat(e.p);
@@ -186,15 +200,16 @@
 						} else {
 							resources = resources.concat(rArray.p);
 						}
+						//校验权限
 						resources.forEach(function(p) {
 							if (!resourcePermission[p]) {
 								return permission = false;
 							}
 						});
-						//console.log(resources, permission);
 						return permission;
 					}
-					typeof cb === 'function' && cb();
+					//执行回调
+					typeof callback === 'function' && callback();
 				})
 			},
 			loginDirect: function(newPath) {
@@ -205,7 +220,7 @@
 				});
 			},
 			logoutDirect: function() {
-				//清除路由权限控制
+				//退出时清除路由权限控制
 				instance.interceptors.request.eject(myInterceptor);
 				this.$router.replace({
 					path: '/login'
@@ -217,3 +232,7 @@
 		}
 	}
 </script>
+
+<style>
+	@import './assets/common.css';
+</style>
